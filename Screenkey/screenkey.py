@@ -241,6 +241,8 @@ class Screenkey(gtk.Window):
 
         if not self.get_property('visible'):
             self.show()
+        if self.options.timeout == 0:
+            return
         if self.timer_hide:
             self.timer_hide.cancel()
         if self.options.timeout > 0:
@@ -461,7 +463,7 @@ class Screenkey(gtk.Window):
         lbl_time2 = gtk.Label(_("seconds"))
         sb_time = gtk.SpinButton(digits=1)
         sb_time.set_increments(0.5, 1.0)
-        sb_time.set_range(0.5, 10.0)
+        sb_time.set_range(0.0, 10.0)
         sb_time.set_numeric(True)
         sb_time.set_update_policy(gtk.UPDATE_IF_VALID)
         sb_time.set_value(self.options.timeout)
