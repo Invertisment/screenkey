@@ -144,7 +144,7 @@ def keysym_to_mod(keysym):
 
 class LabelManager(object):
     def __init__(self, listener, logger, key_mode, bak_mode, mods_mode, mods_only,
-                 multiline, vis_shift, vis_space, recent_thr, compr_cnt, ignore, pango_ctx):
+                 multiline, vis_shift, vis_space, recent_thr, compr_cnt, ignore, pango_ctx, buff_len):
         self.key_mode = key_mode
         self.bak_mode = bak_mode
         self.mods_mode = mods_mode
@@ -152,6 +152,7 @@ class LabelManager(object):
         self.logger = logger
         self.listener = listener
         self.data = []
+        self.counted_keys = []
         self.enabled = True
         self.mods_only = mods_only
         self.multiline = multiline
@@ -163,6 +164,7 @@ class LabelManager(object):
         self.kl = None
         self.font_families = {x.get_name() for x in pango_ctx.list_families()}
         self.update_replacement_map()
+        self.buff_len = buff_len
 
 
     def __del__(self):
@@ -177,7 +179,6 @@ class LabelManager(object):
         self.kl.start()
         self.logger.debug("Thread started.")
 
-
     def stop(self):
         if self.kl:
             self.kl.stop()
@@ -185,10 +186,18 @@ class LabelManager(object):
             self.kl.join()
             self.kl = None
 
-
     def clear(self):
         self.data = []
+        self.counted_keys = []
 
+    def limit_buffer(self):
+        self.data = []
+        print("buff_len", self.buff_len)
+        if self.buff_len > 0:
+            excess_chars = len(self.counted_keys) - self.buff_len
+            if excess_chars > 0:
+                self.logger.debug("Limiting buffer to: %s." % self.buff_len)
+                self.counted_keys = self.counted_keys[excess_chars:]
 
     def get_repl_markup(self, repl):
         if type(repl) != list:
@@ -208,64 +217,94 @@ class LabelManager(object):
             markup = self.get_repl_markup(v.repl)
             self.replace_syms[k] = KeyRepl(v.bk_stop, v.silent, v.spaced, markup)
 
+    class KeyWithCount(object):
+        def __init__(self, key, repeats):
+            self.key = key
+            self.repeats = repeats
+
+    def is_repeated_key(self, key):
+        if len(self.counted_keys) == 0:
+            return False
+        prev_key = self.counted_keys[-1]
+        return key.markup == prev_key.key.markup
+
+    def count_keys(self):
+        for i, key in enumerate(self.data):
+            if self.is_repeated_key(key):
+                last_key = self.counted_keys[-1]
+                last_key.repeats += 1
+            else:
+                newKey = self.KeyWithCount(key, 1)
+                self.counted_keys.append(newKey)
+        self.limit_buffer()
+
+    def adjust_key_markup(self, key_markup):
+        # disable ligatures
+        if len(key_markup) == 1 and 0x0300 <= ord(key_markup) <= 0x036F:
+            # workaround for pango not handling ZWNJ correctly for combining marks
+            return '\u180e' + key_markup + '\u200a'
+        elif len(key_markup):
+            return '\u200c' + key_markup
+        return key_markup
+
+    def add_block_spacing(self, counted_key, markup):
+        key = counted_key.key
+        if key.is_ctrl or key.spaced:
+            return ' ' + markup
+        elif key.bk_stop:
+            return markup + '<span font_family="sans">\u2009</span>'
+        return markup
+
+    def underline_if(self, markup, should_underline):
+        if should_underline:
+            return '<u>{}</u>'.format(markup)
+        return markup
 
     def update_text(self):
+        self.count_keys()
+
         markup = ""
-        recent = False
-        stamp = datetime.now()
-        repeats = 0
-        for i, key in enumerate(self.data):
-            if i != 0:
-                last = self.data[i - 1]
+        #stamp = datetime.now()
 
-                # compress repeats
-                if self.compr_cnt and key.markup == last.markup:
-                    repeats += 1
-                    if repeats < self.compr_cnt:
-                        pass
-                    elif i == len(self.data) - 1 or key.markup != self.data[i + 1].markup:
-                        if not recent and (stamp - key.stamp).total_seconds() < self.recent_thr:
-                            markup += '<u>'
-                            recent = True
-                        markup += '<sub><small>…{}×</small></sub>'.format(repeats + 1)
-                        if len(key.markup) and key.markup[-1] == '\n':
-                            markup += '\n'
-                        continue
-                    else:
-                        continue
-
-                # character block spacing
-                if len(last.markup) and last.markup[-1] == '\n':
-                    pass
-                elif key.is_ctrl or last.is_ctrl or key.spaced or last.spaced:
-                    markup += ' '
-                elif key.bk_stop or last.bk_stop or repeats > self.compr_cnt:
-                    markup += '<span font_family="sans">\u2009</span>'
-                if key.markup != last.markup:
-                    repeats = 0
-
+        for i, counted_key in enumerate(self.counted_keys):
+            key = counted_key.key
             key_markup = key.markup
-            if not recent and (stamp - key.stamp).total_seconds() < self.recent_thr:
-                recent = True
-                key_markup = '<u>' + key_markup
+            repeats = counted_key.repeats
 
-            # disable ligatures
-            if len(key.markup) == 1 and 0x0300 <= ord(key.markup) <= 0x036F:
-                # workaround for pango not handling ZWNJ correctly for combining marks
-                markup += '\u180e' + key_markup + '\u200a'
-            elif len(key_markup):
-                markup += '\u200c' + key_markup
+            adjusted_key_markup = self.adjust_key_markup(key_markup)
+            formatted_markup = self.add_block_spacing(counted_key, adjusted_key_markup)
+            if self.compr_cnt == 0:
+                markup += formatted_markup * (repeats - 1)
+            else:
+                markup += formatted_markup * min(repeats - 1, self.compr_cnt - 1)
 
-        if len(markup) and markup[-1] == '\n':
-            markup = markup.rstrip('\n')
-            if not self.vis_space and not self.data[-1].is_ctrl:
-                # always show some return symbol at the last line
-                markup += self.replace_syms['Return'].repl
-        if recent:
-            markup += '</u>'
+            markup += self.add_block_spacing(
+                    counted_key,
+                    self.underline_if(
+                        markup = adjusted_key_markup,
+                        should_underline = i == len(self.counted_keys) - 1 and repeats <= self.compr_cnt))
+
+            if (not self.compr_cnt == 0) and repeats > self.compr_cnt and repeats > 1:
+
+                markup += self.underline_if(
+                    markup = '<sub><small>…{}×</small></sub>'.format(repeats - self.compr_cnt),
+                    should_underline = i == len(self.counted_keys) - 1)
+
+# todo: what does this do?
+#            key_markup = key.markup
+#            if not recent and (stamp - key.stamp).total_seconds() < self.recent_thr:
+#                recent = True
+#                key_markup = '<u>' + key_markup
+
+# todo: what does this do?
+#        if len(markup) and markup[-1] == '\n':
+#            markup = markup.rstrip('\n')
+#            if not self.vis_space and not self.data[-1].is_ctrl:
+#                # always show some return symbol at the last line
+#                markup += self.replace_syms['Return'].repl
+
         self.logger.debug("Label updated: %s." % repr(markup))
         self.listener(markup)
-
 
     def key_press(self, event):
         if event.pressed == False:

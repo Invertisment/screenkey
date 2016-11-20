@@ -53,7 +53,9 @@ class Screenkey(gtk.Window):
                             'vis_shift': False,
                             'vis_space': True,
                             'geometry': None,
-                            'screen': 0})
+                            'screen': 0,
+                            'buff_len': 200
+                            })
         self.options = self.load_state()
         if self.options is None:
             self.options = defaults
@@ -253,7 +255,6 @@ class Screenkey(gtk.Window):
         self.timer_min = Timer(self.options.recent_thr * 2, self.on_timeout_min)
         self.timer_min.start()
 
-
     def on_timeout_main(self):
         if not self.options.persist:
             self.hide()
@@ -282,7 +283,8 @@ class Screenkey(gtk.Window):
                                       recent_thr=self.options.recent_thr,
                                       compr_cnt=self.options.compr_cnt,
                                       ignore=self.options.ignore,
-                                      pango_ctx=self.label.get_pango_context())
+                                      pango_ctx=self.label.get_pango_context(),
+                                      buff_len=self.options.buff_len)
         self.labelmngr.start()
 
 
@@ -311,6 +313,15 @@ class Screenkey(gtk.Window):
         self.prefs.hide()
         return True
 
+    def update_buff_len(self, widget):
+        timeout_is_zero = self.options.timeout == 0
+        widget.set_sensitive(timeout_is_zero)
+        if timeout_is_zero:
+            self.options.buff_len = self.sb_buff_len.get_value_as_int()
+        else:
+            self.options.buff_len = 0
+        self.on_change_mode()
+        print(self.options.timeout, self.options.buff_len)
 
     def make_preferences_dialog(self):
         # TODO: switch to something declarative or at least clean-up the following mess
@@ -322,6 +333,8 @@ class Screenkey(gtk.Window):
 
         def on_sb_time_changed(widget, data=None):
             self.options.timeout = widget.get_value()
+            self.update_buff_len(self.sb_buff_len)
+            self.on_change_mode()
             self.logger.debug("Timeout value changed: %f." % self.options.timeout)
 
         def on_cbox_sizes_changed(widget, data=None):
@@ -395,6 +408,12 @@ class Screenkey(gtk.Window):
             self.options.compr_cnt = widget.get_value_as_int()
             self.on_change_mode()
             self.logger.debug("Compress repeats value changed: %d." % self.options.compr_cnt)
+
+        def on_sb_buff_len_changed(widget, data=None):
+            self.options.buff_len = widget.get_value_as_int()
+            self.update_buff_len(widget)
+            self.on_change_mode()
+            #self.logger.debug("Compress repeats value changed: %d." % self.options.compr_cnt)
 
         def on_cbox_compr_changed(widget, data=None):
             compr_enabled = widget.get_active()
@@ -477,6 +496,22 @@ class Screenkey(gtk.Window):
         chk_persist.connect("toggled", on_cbox_persist_changed)
         chk_persist.set_active(self.options.persist)
         vbox_time.pack_start(chk_persist)
+
+# max-chars
+
+        lbl_buff_len = gtk.Label(_("Buffer size"))
+        self.sb_buff_len = sb_buff_len = gtk.SpinButton(digits=0)
+        sb_buff_len.set_increments(100, 100)
+        sb_buff_len.set_range(50, 1000)
+        sb_buff_len.set_numeric(True)
+        sb_buff_len.set_update_policy(gtk.UPDATE_IF_VALID)
+        sb_buff_len.set_value(self.options.buff_len or 50)
+        sb_buff_len.connect("value-changed", on_sb_buff_len_changed)
+        hbox_buff_len = gtk.HBox()
+        hbox_buff_len.pack_start(lbl_buff_len, expand=False, fill=False, padding=6)
+        hbox_buff_len.pack_start(sb_buff_len, expand=False, fill=False, padding=4)
+        vbox_time.pack_start(hbox_buff_len)
+#
 
         frm_time.add(vbox_time)
         frm_time.show_all()
